@@ -1,23 +1,41 @@
 import { Product } from '../models';
 import express, { Request, Response, NextFunction } from 'express';
-import { addUuidToArray } from '../service/common';
-import products from '../data/products.json';
-import uuidv4 from 'uuid/v4';
-
+import { productSchema } from '../validation/productSchema';
+import { getOrThrow } from '../utils/validate';
+import { createLogger } from '../utils/logger';
+import uuidv1 from 'uuid/v1';
+import { products } from "../data/products";
+const logger = createLogger('products-controller');
 const productsRouter = express.Router();
 
-const productsRes = addUuidToArray(products);
+export function loadProducts(): Promise<Product[]> {
+  return Promise.resolve(products);
+}
 
-function findProjectIndexOrNotFound(req: Request, res: Response, next: NextFunction) {
+export function loadProductsMw(req: Request, res: Response, next: NextFunction) {
+  loadProducts()
+    .then(products => {
+      res.locals.products = products;
+      next();
+    })
+    .catch(next);
+}
+
+export function resolveProductsFromResponse(res: Response) {
+  return res.locals.products;
+}
+
+// const productsRes = addUuidToArray(products);
+async function findProjectIndexOrNotFound(req: Request, res: Response, next: NextFunction) {
+  try {
     const { id } = req.params;
-
     if ( id.length < 36) {
         res.sendStatus(400);
         return;
     }
 
-    const matchingIndex = productsRes.findIndex(p => p.id === id);
-
+    const products = await loadProducts();
+    const matchingIndex =  products.findIndex(p => p.id === id);
     if (matchingIndex < 0) {
         res.sendStatus(404);
         return;
@@ -25,6 +43,9 @@ function findProjectIndexOrNotFound(req: Request, res: Response, next: NextFunct
 
     res.locals.matchingIndex = matchingIndex;
     next();
+  } catch (err) {
+    next(err);
+  }
 }
 
 function checkNameMinChart(req: Request, res: Response, next: NextFunction) {
@@ -38,38 +59,76 @@ function checkNameMinChart(req: Request, res: Response, next: NextFunction) {
     next();
 }
 
-productsRouter.get('/', (req, res, next) => res.send(productsRes));
+productsRouter.get('/',
+  loadProductsMw,
+  (req, res, next) => {
+    logger.info('Someone requested projects!!');
+    const productsRes = resolveProductsFromResponse(res);
+    res.send(productsRes);
+  });
 
-productsRouter.get('/:id', findProjectIndexOrNotFound, (req, res) => {
-    const product = productsRes[res.locals.matchingIndex];
-    res.send(product);
+productsRouter.get('/:id',
+findProjectIndexOrNotFound,
+async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    logger.info('Someone requested project id: ', id);
+    const matching = (await loadProducts()).find(p => p.id === id);
+    if (!matching) {
+      res.sendStatus(404);
+      return;
+    }
+
+    res.send(matching);
+  } catch (err) {
+    next(err);
+  }
 });
 
-productsRouter.post('/', checkNameMinChart, (req, res) => {
+productsRouter.post('/', checkNameMinChart, async (req, res, next) => {
     const product: Product = req.body;
-    product.id = uuidv4();
+    product.id = uuidv1();
 
-    productsRes.push(product);
-    res.status(201).send(product);
+    await loadProducts()
+    .then(products => {
+      products.push(product);
+      res.status(201).send(product);
+    })
+    .catch(next);
 });
 
-productsRouter.put('/:id', 
+productsRouter.put('/:id',
   findProjectIndexOrNotFound,
   checkNameMinChart,
-  (req, res) => {
-    const product: Product = req.body;
+  async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      logger.info('Someone upodate project id: ', id);
 
-    productsRes[res.locals.matchingIndex] = product;
-    res.status(200).send(product);
+      const project = getOrThrow<Product>(req.body, productSchema, next);
+
+      if (project) {
+        project.id = id;
+        const projects = await loadProducts();
+        projects[res.locals.matchingIndex] = project;
+        res.status(200).send(project);
+      }
+    } catch (err) {
+      next(err);
+    }
   },
 );
 
 productsRouter.delete('/:id',
   findProjectIndexOrNotFound,
-  (req, res) => {
-    productsRes.splice(res.locals.matchingIndex, 1);
-    res.sendStatus(204);
-  },
-);
+  async (req, res, next) => {
+    await loadProducts()
+    .then(products => {
+      logger.info('Someone delete project id: ', products[res.locals.matchingIndex].id);
+      products.splice(res.locals.matchingIndex, 1);
+      res.sendStatus(204);
+    })
+    .catch(next);
+  });
 
 export { productsRouter };

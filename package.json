@@ -27,8 +27,13 @@
     "typescript": "^3.5.3"
   },
   "dependencies": {
+    "@types/express-winston": "^3.0.3",
+    "@types/joi": "^14.3.3",
     "cors": "^2.8.5",
     "express": "^4.17.1",
-    "uuid": "^3.3.2"
+    "express-winston": "^3.2.1",
+    "joi": "^14.3.1",
+    "uuid": "^3.3.2",
+    "winston": "^3.2.1"
   }
 }

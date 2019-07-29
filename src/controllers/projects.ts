@@ -2,6 +2,9 @@ import { Project } from '../models';
 import express, { Request, Response, NextFunction } from 'express';
 import uuidv1 from 'uuid/v1';
 import { router as projectMembersRouter } from './project-members';
+import { getOrThrow } from '../utils/validate';
+import { projectSchema } from '../validation/projectScheme';
+import { createLogger } from '../utils/logger';
 
 // TODO: move elsewhere
 const projects: Project[] = [
@@ -19,63 +22,114 @@ const projects: Project[] = [
   { id: uuidv1(), name: 'AirPods' },
 ];
 
-function findProjectIndexOrNotFound(req: Request, res: Response, next: NextFunction) {
-  const { id } = req.params;
 
-  const matchingIndex = projects.findIndex(p => p.id === id);
-
-  if (matchingIndex < 0) {
-    res.sendStatus(404);
-    return;
-  }
-
-  res.locals.matchingIndex = matchingIndex;
-  next();
+// TODO: move elsewhere
+function loadProjects(): Promise<Project[]> {
+  return Promise.resolve(projects);
 }
 
+function loadProjectsMw(req: Request, res: Response, next: NextFunction) {
+  loadProjects()
+    .then(projects => {
+      res.locals.projects = projects;
+      next();
+    })
+    .catch(next);
+}
+
+function resolveProjectsFromResponse(res: Response) {
+  return res.locals.projects;
+}
+
+async function findProjectIndexOrNotFound(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { id } = req.params;
+
+    const matchingIndex = (await loadProjects()).findIndex(p => p.id === id);
+
+    if (matchingIndex < 0) {
+      res.sendStatus(404);
+      return;
+    }
+
+    res.locals.matchingIndex = matchingIndex;
+    next();
+  } catch (err) {
+    next(err);
+  }
+}
+
+const logger = createLogger('projects-controller');
 const router = express.Router();
 
 router.use('/:projectId/members', projectMembersRouter);
 
-router.get('/', (req, res, next) => res.send(projects));
+router.get('/',
+  loadProjectsMw,
+  (req, res, next) => {
+    logger.info('Someone requested projects!!');
+    const projects = resolveProjectsFromResponse(res);
+    res.send(projects);
+  },
+);
 
-router.get('/:id', (req, res) => {
-  const { id } = req.params;
-  const matching = projects.find(p => p.id === id);
+router.get('/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const matching = (await loadProjects()).find(p => p.id === id);
 
-  if (!matching) {
-    res.sendStatus(404);
-    return;
+    if (!matching) {
+      res.sendStatus(404);
+      return;
+    }
+
+    res.send(matching);
+  } catch (err) {
+    next(err);
   }
-
-  res.send(matching);
 });
 
-router.post('/', (req, res) => {
+router.post('/', (req, res, next) => {
   const project: Project = req.body;
   project.id = uuidv1();
 
-  projects.push(project);
-  res.status(201).send(project);
+  loadProjects()
+    .then(projects => {
+      projects.push(project);
+      res.status(201).send(project);
+    })
+    .catch(next);
 });
 
 router.put('/:id',
   findProjectIndexOrNotFound,
-  (req, res) => {
-    const { id } = req.params;
-    const project: Project = req.body;
-    project.id = id;
+  async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      const project = getOrThrow<Project>(req.body, projectSchema, next);
 
-    projects[res.locals.matchingIndex] = project;
-    res.status(200).send(project);
+      if (project) {
+        project.id = id;
+
+        const projects = await loadProjects();
+        projects[res.locals.matchingIndex] = project;
+        res.status(200).send(project);
+      }
+    } catch (err) {
+      next(err);
+    }
   },
 );
 
 router.delete('/:id',
   findProjectIndexOrNotFound,
-  (req, res) => {
-    projects.splice(res.locals.matchingIndex, 1);
-    res.sendStatus(204);
+  (req, res, next) => {
+    loadProjects()
+      .then(projects => {
+        projects.splice(res.locals.matchingIndex, 1);
+        res.sendStatus(204);
+      })
+      .catch(next);
   },
 );
 

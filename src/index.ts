@@ -1,7 +1,7 @@
 // tslint:disable: no-console
 import { app } from './app';
 
-app.set('port', process.env.PORT || 3001);
+app.set('port', process.env.PORT || 3002);
 
 const server = app.listen(app.get('port'), () => {
   console.log(
