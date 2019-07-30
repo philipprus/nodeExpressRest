@@ -1,7 +1,10 @@
-// tslint:disable: no-console
+import config, { KnownConfigKey } from './utils/config';
 import { app } from './app';
 
-app.set('port', process.env.PORT || 3002);
+config.init();
+const port = +config.get(KnownConfigKey.ServerPort, '3002');
+app.set('port', port);
+
 
 const server = app.listen(app.get('port'), () => {
   console.log(

@@ -1,52 +1,15 @@
-import { Product } from '../models';
+import { Product, UserRole } from '../models';
 import express, { Request, Response, NextFunction } from 'express';
 import { productSchema } from '../validation/productSchema';
 import { getOrThrow } from '../utils/validate';
 import { createLogger } from '../utils/logger';
-import uuidv1 from 'uuid/v1';
-import { products } from "../data/products";
+import store from '../store';
+import { auth } from '../middleware/auth';
+import { idSchema } from '../validation/idShema';
+import { authenticate } from '../middleware/auth';
+import { authorize } from '../middleware/auth';
 const logger = createLogger('products-controller');
 const productsRouter = express.Router();
-
-export function loadProducts(): Promise<Product[]> {
-  return Promise.resolve(products);
-}
-
-export function loadProductsMw(req: Request, res: Response, next: NextFunction) {
-  loadProducts()
-    .then(products => {
-      res.locals.products = products;
-      next();
-    })
-    .catch(next);
-}
-
-export function resolveProductsFromResponse(res: Response) {
-  return res.locals.products;
-}
-
-// const productsRes = addUuidToArray(products);
-async function findProjectIndexOrNotFound(req: Request, res: Response, next: NextFunction) {
-  try {
-    const { id } = req.params;
-    if ( id.length < 36) {
-        res.sendStatus(400);
-        return;
-    }
-
-    const products = await loadProducts();
-    const matchingIndex =  products.findIndex(p => p.id === id);
-    if (matchingIndex < 0) {
-        res.sendStatus(404);
-        return;
-    }
-
-    res.locals.matchingIndex = matchingIndex;
-    next();
-  } catch (err) {
-    next(err);
-  }
-}
 
 function checkNameMinChart(req: Request, res: Response, next: NextFunction) {
     const product: Product = req.body;
@@ -55,80 +18,73 @@ function checkNameMinChart(req: Request, res: Response, next: NextFunction) {
         res.sendStatus(409);
         return;
     }
-
     next();
 }
 
 productsRouter.get('/',
-  loadProductsMw,
+  authenticate(),
   (req, res, next) => {
-    logger.info('Someone requested projects!!');
-    const productsRes = resolveProductsFromResponse(res);
-    res.send(productsRes);
+    logger.info('Products requested');
+    res.send(store.products);
   });
 
 productsRouter.get('/:id',
-findProjectIndexOrNotFound,
-async (req, res, next) => {
-  try {
-    const { id } = req.params;
-    logger.info('Someone requested project id: ', id);
-    const matching = (await loadProducts()).find(p => p.id === id);
-    if (!matching) {
+  authenticate(),
+  (req, res, next) => {
+    const id = getOrThrow<number>(req.params.id, idSchema);
+    const product = store.products.find((o: { id: number | undefined; }) => o.id === id);
+    if (!product) {
       res.sendStatus(404);
       return;
     }
-
-    res.send(matching);
-  } catch (err) {
-    next(err);
-  }
+    res.send(product);
 });
 
-productsRouter.post('/', checkNameMinChart, async (req, res, next) => {
-    const product: Product = req.body;
-    product.id = uuidv1();
-
-    await loadProducts()
-    .then(products => {
-      products.push(product);
+productsRouter.post('/', checkNameMinChart, authenticate(), authorize(UserRole.Admin), (req, res, next) => {
+    const product = getOrThrow<Product>(req.body, productSchema);
+    if (product) {
+      product.id = store.products.length + 1;
+      store.products.push(product);
       res.status(201).send(product);
-    })
-    .catch(next);
+    }
+    res.sendStatus(404);
+    return;
 });
 
 productsRouter.put('/:id',
-  findProjectIndexOrNotFound,
+  authenticate(),
+  auth(UserRole.Admin),
   checkNameMinChart,
-  async (req, res, next) => {
-    try {
-      const { id } = req.params;
-      logger.info('Someone upodate project id: ', id);
-
-      const project = getOrThrow<Product>(req.body, productSchema, next);
-
-      if (project) {
-        project.id = id;
-        const projects = await loadProducts();
-        projects[res.locals.matchingIndex] = project;
-        res.status(200).send(project);
-      }
-    } catch (err) {
-      next(err);
+  (req, res, next) => {
+    const id = getOrThrow<number>(req.params.id, idSchema);
+    const product = getOrThrow<Product>(req.body, productSchema);
+    if (product && id) {
+        product.id = id;
+        const existing = store.products.find((o: { id: number; }) => o.id === id);
+        if (!existing) {
+          res.sendStatus(404);
+          return;
+        }
+        Object.assign(existing, product);
+        res.send(existing);
     }
+
+    res.sendStatus(404);
+    return;
   },
 );
 
 productsRouter.delete('/:id',
-  findProjectIndexOrNotFound,
-  async (req, res, next) => {
-    await loadProducts()
-    .then(products => {
-      logger.info('Someone delete project id: ', products[res.locals.matchingIndex].id);
-      products.splice(res.locals.matchingIndex, 1);
-      res.sendStatus(204);
-    })
-    .catch(next);
+  authenticate(), authorize(UserRole.Admin),
+  (req, res, next) => {
+    const id = getOrThrow<number>(req.params.id, idSchema);
+    const existingIndex = store.products.findIndex((o: { id: number | undefined; }) => o.id === id);
+    if (existingIndex < 0) {
+      res.sendStatus(404);
+      return;
+    }
+    store.products.splice(existingIndex, 1);
+    res.sendStatus(204);
   });
 
-export { productsRouter };
+export default productsRouter;
